@@ -885,13 +885,14 @@ module ActiveRecord
 
     def copy(destination, sources, options = {})
       copied = []
+      schema_migration = options[:schema_migration]
 
       FileUtils.mkdir_p(destination) unless File.exist?(destination)
 
-      destination_migrations = ActiveRecord::MigrationContext.new(destination).migrations
+      destination_migrations = ActiveRecord::MigrationContext.new(destination, schema_migration).migrations
       last = destination_migrations.last
       sources.each do |scope, path|
-        source_migrations = ActiveRecord::MigrationContext.new(path).migrations
+        source_migrations = ActiveRecord::MigrationContext.new(path, schema_migration).migrations
 
         source_migrations.each do |migration|
           source = File.binread(migration.filename)
@@ -1014,10 +1015,31 @@ module ActiveRecord
   end
 
   class MigrationContext #:nodoc:
-    attr_reader :migrations_paths
+    attr_reader :migrations_paths, :schema_migration
 
-    def initialize(migrations_paths)
+    def initialize(migrations_paths, schema_migration)
       @migrations_paths = migrations_paths
+      @schema_migration = schema_migration
+    end
+
+    def table_exists?
+      schema_migration.table_exists?
+    end
+
+    def all_versions
+      schema_migration.all_versions.map(&:to_i)
+    end
+
+    def normalized_versions
+      schema_migration.normalized_versions
+    end
+
+    def normalize_migration_number(version)
+      schema_migration.normalize_migration_number(version)
+    end
+
+    def create_schema_migration_table
+      schema_migration.create_table
     end
 
     def migrate(target_version = nil, &block)
@@ -1048,7 +1070,7 @@ module ActiveRecord
         migrations
       end
 
-      Migrator.new(:up, selected_migrations, target_version).migrate
+      Migrator.new(:up, selected_migrations, schema_migration, target_version).migrate
     end
 
     def down(target_version = nil)
@@ -1058,20 +1080,20 @@ module ActiveRecord
         migrations
       end
 
-      Migrator.new(:down, selected_migrations, target_version).migrate
+      Migrator.new(:down, selected_migrations, schema_migration, target_version).migrate
     end
 
     def run(direction, target_version)
-      Migrator.new(direction, migrations, target_version).run
+      Migrator.new(direction, migrations, schema_migration, target_version).run
     end
 
     def open
-      Migrator.new(:up, migrations, nil)
+      Migrator.new(:up, migrations, schema_migration)
     end
 
     def get_all_versions
-      if SchemaMigration.table_exists?
-        SchemaMigration.all_versions.map(&:to_i)
+      if table_exists?
+        all_versions
       else
         []
       end
@@ -1108,12 +1130,12 @@ module ActiveRecord
     end
 
     def migrations_status
-      db_list = ActiveRecord::SchemaMigration.normalized_versions
+      db_list = normalized_versions
 
       file_list = migration_files.map do |file|
         version, name, scope = parse_migration_filename(file)
         raise IllegalMigrationNameError.new(file) unless version
-        version = ActiveRecord::SchemaMigration.normalize_migration_number(version)
+        version = normalize_migration_number(version)
         status = db_list.delete(version) ? "up" : "down"
         [status, version, (name + scope).humanize]
       end.compact
@@ -1153,7 +1175,7 @@ module ActiveRecord
       end
 
       def move(direction, steps)
-        migrator = Migrator.new(direction, migrations)
+        migrator = Migrator.new(direction, migrations, schema_migration)
 
         if current_version != 0 && !migrator.current_migration
           raise UnknownMigrationVersionError.new(current_version)
@@ -1172,27 +1194,28 @@ module ActiveRecord
       end
   end
 
-  class Migrator #:nodoc:
+  class Migrator # :nodoc:
     class << self
       attr_accessor :migrations_paths
 
       # For cases where a table doesn't exist like loading from schema cache
       def current_version
-        MigrationContext.new(migrations_paths).current_version
+        MigrationContext.new(migrations_paths, SchemaMigration).current_version
       end
     end
 
     self.migrations_paths = ["db/migrate"]
 
-    def initialize(direction, migrations, target_version = nil)
+    def initialize(direction, migrations, schema_migration, target_version = nil)
       @direction         = direction
       @target_version    = target_version
       @migrated_versions = nil
       @migrations        = migrations
+      @schema_migration  = schema_migration
 
       validate(@migrations)
 
-      ActiveRecord::SchemaMigration.create_table
+      @schema_migration.create_table
       ActiveRecord::InternalMetadata.create_table
     end
 
@@ -1246,7 +1269,7 @@ module ActiveRecord
     end
 
     def load_migrated
-      @migrated_versions = Set.new(Base.connection.migration_context.get_all_versions)
+      @migrated_versions = Set.new(@schema_migration.all_versions.map(&:to_i))
     end
 
     private
@@ -1330,10 +1353,10 @@ module ActiveRecord
       def record_version_state_after_migrating(version)
         if down?
           migrated.delete(version)
-          ActiveRecord::SchemaMigration.delete_by(version: version.to_s)
+          @schema_migration.delete_by(version: version.to_s)
         else
           migrated << version
-          ActiveRecord::SchemaMigration.create!(version: version.to_s)
+          @schema_migration.create!(version: version.to_s)
         end
       end
 
