@@ -166,7 +166,7 @@ module ActiveRecord
         MigrationContext.new(migrations_paths, schema_migration)
       end
 
-      def schema_migration
+      def schema_migration # :nodoc:
         @schema_migration ||= begin
                                 conn = self
                                 spec_name = conn.pool.spec.name

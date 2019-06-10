@@ -885,7 +885,7 @@ module ActiveRecord
 
     def copy(destination, sources, options = {})
       copied = []
-      schema_migration = options[:schema_migration]
+      schema_migration = ActiveRecord::Base.connection.schema_migration
 
       FileUtils.mkdir_p(destination) unless File.exist?(destination)
 
@@ -1022,26 +1022,6 @@ module ActiveRecord
       @schema_migration = schema_migration
     end
 
-    def table_exists?
-      schema_migration.table_exists?
-    end
-
-    def all_versions
-      schema_migration.all_versions.map(&:to_i)
-    end
-
-    def normalized_versions
-      schema_migration.normalized_versions
-    end
-
-    def normalize_migration_number(version)
-      schema_migration.normalize_migration_number(version)
-    end
-
-    def create_schema_migration_table
-      schema_migration.create_table
-    end
-
     def migrate(target_version = nil, &block)
       case
       when target_version.nil?
@@ -1092,8 +1072,8 @@ module ActiveRecord
     end
 
     def get_all_versions
-      if table_exists?
-        all_versions
+      if schema_migration.table_exists?
+        schema_migration.all_versions.map(&:to_i)
       else
         []
       end
@@ -1130,12 +1110,12 @@ module ActiveRecord
     end
 
     def migrations_status
-      db_list = normalized_versions
+      db_list = schema_migration.normalized_versions
 
       file_list = migration_files.map do |file|
         version, name, scope = parse_migration_filename(file)
         raise IllegalMigrationNameError.new(file) unless version
-        version = normalize_migration_number(version)
+        version = schema_migration.normalize_migration_number(version)
         status = db_list.delete(version) ? "up" : "down"
         [status, version, (name + scope).humanize]
       end.compact
